@@ -71,13 +71,25 @@ it("reports path properties outside router records only as candidates", () => {
 });
 
 it("scans an object's route fields once for repeated path keys", () => {
-  const start = performance.now();
-  const endpoints = routeEndpoints(
-    `const record = { ${Array.from({ length: 20_000 }, (_, i) => `path: "p${String(i)}"`).join(", ")} };`,
-  );
-  expect(endpoints).toHaveLength(20_000);
+  const recordSource = (count: number) =>
+    `const record = { ${Array.from({ length: count }, (_, index) => `path: "p${String(index)}"`).join(", ")} };`;
+  const measure = (count: number) => {
+    const started = performance.now();
+    const endpoints = routeEndpoints(recordSource(count));
+    return { endpoints, elapsed: performance.now() - started };
+  };
+  // Warm the parser so the baseline is not the cold compile of this shape.
+  measure(2_000);
+  const smaller = measure(2_000);
+  const larger = measure(20_000);
+  expect(larger.endpoints).toHaveLength(20_000);
   expect(
-    endpoints.every(({ interpretation }) => interpretation === "candidate"),
+    larger.endpoints.every(
+      ({ interpretation }) => interpretation === "candidate",
+    ),
   ).toBe(true);
-  expect(performance.now() - start).toBeLessThan(2000);
-}, 30000);
+  // Ten times as many keys. One field scan stays near 10×. Scanning the
+  // object again for every key is about 100× and still fails this bound.
+  // Absolute milliseconds move with runner load; the ratio does not.
+  expect(larger.elapsed).toBeLessThan(Math.max(smaller.elapsed, 1) * 50);
+}, 60_000);
