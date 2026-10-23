@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { Cli } from "incur";
 import { afterEach, expect, it, vi } from "vitest";
 
-import * as analysisViewService from "../../src/application/analysisView/AnalysisViewService.js";
+import * as evidence from "../../src/domain/evidence.js";
+import * as evidenceInput from "../../src/application/EvidenceInputResolver.js";
 import { WasmArtifactService } from "../../src/application/wasm/WasmArtifactService.js";
 import { registerAnalysisViewCommands } from "../../src/cli/analysisViewCommands.js";
 import { registerWasmCommands } from "../../src/cli/wasmCommands.js";
@@ -213,15 +214,23 @@ it.each([
         });
       });
     };
-    const originalProject = analysisViewService.inspectAnalysisViewValidated;
-    let projected: ReturnType<typeof originalProject> | undefined;
-    const project = vi
-      .spyOn(analysisViewService, "inspectAnalysisViewValidated")
-      .mockImplementation((...args) => {
-        projected = originalProject(...args);
+    // The projection function is called from inside its own module, so a spy
+    // on that export never runs. Queue the interrupt from the resolver it imports.
+    const originalResolve = evidenceInput.resolveEvidenceInput;
+    const resolve = vi
+      .spyOn(evidenceInput, "resolveEvidenceInput")
+      .mockImplementation((input, lookup) => {
+        const resolved = originalResolve(input, lookup);
         if (phase.startsWith("projection")) queueInterrupt();
-        return projected;
+        return resolved;
       });
+    const originalCreateEvidence = evidence.createEvidence;
+    const createdEvidence: ReturnType<typeof originalCreateEvidence>[] = [];
+    vi.spyOn(evidence, "createEvidence").mockImplementation((...args) => {
+      const created = originalCreateEvidence(...args);
+      createdEvidence.push(created);
+      return created;
+    });
     const originalClose = OwnedFileHandle.prototype.close;
     const close = vi
       .spyOn(OwnedFileHandle.prototype, "close")
@@ -269,10 +278,13 @@ it.each([
       );
       if (signal !== "control") expect(interruptHandled).toBe(true);
       if (phase.startsWith("authentication"))
-        expect(project).not.toHaveBeenCalled();
+        expect(resolve).not.toHaveBeenCalled();
       if (phase === "projection") {
-        if (!projected?.ok) throw new Error("Expected a completed page");
-        expect(result.details.partial_observation).toEqual(projected.value);
+        const projected = createdEvidence.find(
+          (record) => record.predicate_type === "rea.analysis-view",
+        );
+        expect(projected).toBeDefined();
+        expect(result.details.partial_observation).toEqual(projected);
       }
     } finally {
       await pendingInterrupt;
